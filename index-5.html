@@ -1,0 +1,457 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WHS Golf Handicap Calculator</title>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        button.delete-btn { background-color: #ff4d4d; color: white; border: none; padding: 5px 10px; cursor: pointer; }
+        button.delete-btn:hover { background-color: #cc0000; }
+        #customCourseInputs { display: none; margin-top: 10px; }
+        #teeInfo { margin-top: 10px; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>WHS Handicap Calculator</h1>
+    <p>Select the course, tee, enter your adjusted gross score, and add the round. For custom courses, select "Other," enter course name, Course Rating, and Slope, then add the round to save the course for future use. The app calculates score differentials and your Handicap Index based on the best 8 of your last 20 rounds (or fewer, per WHS rules).</p>
+    <p>Assumptions: Score entered is the adjusted gross score. PCC is 0. No exceptional score adjustments or caps implemented.</p>
+
+    <label for="club">Course:</label>
+    <select id="club"></select><br><br>
+
+    <div id="customCourseInputs">
+        <label for="customCourseName">Course Name:</label>
+        <input id="customCourseName" type="text" placeholder="e.g., My Golf Club"><br><br>
+        <label for="customCR">Course Rating:</label>
+        <input id="customCR" type="number" step="0.1" min="0" placeholder="e.g., 72.5"><br><br>
+        <label for="customSlope">Slope Rating:</label>
+        <input id="customSlope" type="number" min="55" max="155" placeholder="e.g., 135"><br><br>
+    </div>
+
+    <label for="tee">Tee:</label>
+    <select id="tee"></select><br>
+    <div id="teeInfo"></div><br>
+
+    <label for="score">Score:</label>
+    <input id="score" type="number" min="0" placeholder="Enter score"><br><br>
+
+    <button onclick="addRound()">Add Round</button>
+    <button onclick="clearRounds()">Clear All Rounds</button><br><br>
+
+    <h2>Your Rounds (most recent at bottom)</h2>
+    <table id="rounds">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Course</th>
+                <th>Tee</th>
+                <th>Score</th>
+                <th>Differential</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table><br>
+
+    <button onclick="calculateHI()">Calculate Handicap Index</button>
+    <div id="result" style="font-size: 1.2em; margin-top: 10px;"></div>
+
+    <script>
+        // Predefined courses
+        const predefinedTees = [
+            { club: "RSHECC", tee: "Sur - Amarillas", gender: "M", cr: 71.8, slope: 139, par: 72 },
+            { club: "RSHECC", tee: "Doradas", gender: "M", cr: 69.9, slope: 138, par: 72 },
+            { club: "RSHECC", tee: "Par 71", gender: "M", cr: 71.7, slope: 139, par: 71 },
+            { club: "RSHECC", tee: "Par 70", gender: "M", cr: 70.8, slope: 136, par: 70 },
+            { club: "CCVM", tee: "Negro - Amarillas", gender: "M", cr: 72.7, slope: 141, par: 72 },
+            { club: "CCVM", tee: "Negro - Azules", gender: "M", cr: 69.3, slope: 136, par: 72 },
+            { club: "CCVM", tee: "Amarillo - Amarillas", gender: "M", cr: 71.0, slope: 124, par: 72 },
+            { club: "Real Club de la Puerta de Hierro – Arriba", tee: "Doradas", gender: "M", cr: 69.2, slope: 127, par: 72 },
+            { club: "Real Club de la Puerta de Hierro – Arriba", tee: "Blancas", gender: "M", cr: 73.8, slope: 138, par: 72 },
+            { club: "Real Club de la Puerta de Hierro – Arriba", tee: "Amarillas", gender: "M", cr: 71.4, slope: 135, par: 72 },
+            { club: "El Encín", tee: "Negras", gender: "M", cr: 77.8, slope: 141, par: 72 },
+            { club: "El Encín", tee: "Blancas", gender: "M", cr: 75.1, slope: 137, par: 72 },
+            { club: "El Encín", tee: "Amarillas", gender: "M", cr: 71.7, slope: 131, par: 72 },
+            { club: "Olivar de la Hinojosa – Olivar Hinojosa", tee: "Negras", gender: "M", cr: 71.8, slope: 134, par: 72 },
+            { club: "Olivar de la Hinojosa – Olivar Hinojosa", tee: "Amarillas", gender: "M", cr: 71.2, slope: 133, par: 72 },
+            { club: "Sherry Golf Jerez", tee: "Doradas", gender: "M", cr: 71.7, slope: 124, par: 72 },
+            { club: "Sherry Golf Jerez", tee: "Negras", gender: "M", cr: 75.1, slope: 132, par: 72 },
+            { club: "Sherry Golf Jerez", tee: "Blancas", gender: "M", cr: 73.2, slope: 128, par: 72 },
+            { club: "Sherry Golf Jerez", tee: "Amarillas", gender: "M", cr: 70.0, slope: 120, par: 72 },
+            { club: "Barceló Montecastillo Golf (Jerez)", tee: "Blancas", gender: "M", cr: 74.5, slope: 132, par: 72 },
+            { club: "Barceló Montecastillo Golf (Jerez)", tee: "Amarillas", gender: "M", cr: 72.6, slope: 132, par: 72 },
+            { club: "Barceló Montecastillo Golf (Jerez)", tee: "Azules", gender: "M", cr: 70.0, slope: 129, par: 72 },
+            { club: "Real Novo Sancti Petri – Recorrido A (Mar y Pinos)", tee: "Negras", gender: "M", cr: 75.2, slope: 143, par: 72 },
+            { club: "Real Novo Sancti Petri – Recorrido A (Mar y Pinos)", tee: "Blancas", gender: "M", cr: 73.5, slope: 139, par: 72 },
+            { club: "Real Novo Sancti Petri – Recorrido A (Mar y Pinos)", tee: "Amarillas", gender: "M", cr: 70.4, slope: 133, par: 72 },
+            { club: "Costa Ballena – Olivos + Palmeras", tee: "Blancas", gender: "M", cr: 73.4, slope: 133, par: 72 },
+            { club: "Costa Ballena – Olivos + Palmeras", tee: "Amarillas", gender: "M", cr: 71.9, slope: 130, par: 72 },
+            { club: "Abu Dhabi City Golf Club", tee: "Back", gender: "M", cr: 70.7, slope: 134, par: 72 },
+            { club: "Abu Dhabi Golf Club - The National", tee: "Black", gender: "M", cr: 76.2, slope: 141, par: 72 },
+            { club: "Abu Dhabi Golf Club - The National", tee: "Green", gender: "M", cr: 73.5, slope: 136, par: 72 },
+            { club: "Abu Dhabi Golf Club - The National", tee: "White", gender: "M", cr: 71.1, slope: 130, par: 72 },
+            { club: "Al Ain Equestrian Shooting & Golf Club", tee: "Black", gender: "M", cr: 72.7, slope: 135, par: 72 },
+            { club: "Al Ain Equestrian Shooting & Golf Club", tee: "Blue", gender: "M", cr: 69.7, slope: 132, par: 72 },
+            { club: "Al Ain Equestrian Shooting & Golf Club", tee: "White", gender: "M", cr: 67.5, slope: 129, par: 72 },
+            { club: "Al Dhafra Golf Club", tee: "Men's", gender: "M", cr: 70.5, slope: 127, par: 72 },
+            { club: "Al Dhannah Golf Club", tee: "Black", gender: "M", cr: 73.8, slope: 142, par: 72 },
+            { club: "Al Dhannah Golf Club", tee: "Blue", gender: "M", cr: 72.0, slope: 141, par: 72 },
+            { club: "Al Dhannah Golf Club", tee: "Red Men", gender: "M", cr: 68.0, slope: 121, par: 72 },
+            { club: "Al Dhannah Golf Club", tee: "White", gender: "M", cr: 69.0, slope: 127, par: 72 },
+            { club: "Al Ghazal Golf Club", tee: "Blue", gender: "M", cr: 70.6, slope: 129, par: 72 },
+            { club: "Al Ghazal Golf Club", tee: "White", gender: "M", cr: 70.3, slope: 133, par: 72 },
+            { club: "Al Hamra Golf Club", tee: "Black", gender: "M", cr: 75.3, slope: 138, par: 72 },
+            { club: "Al Hamra Golf Club", tee: "Blue", gender: "M", cr: 73.7, slope: 135, par: 72 },
+            { club: "Al Hamra Golf Club", tee: "White", gender: "M", cr: 72.4, slope: 132, par: 72 },
+            { club: "Al Hamra Golf Club", tee: "Yellow", gender: "M", cr: 69.6, slope: 131, par: 72 },
+            { club: "Al Hamra Golf Club - Floodlit", tee: "Black-Floodlit", gender: "M", cr: 37.2, slope: 137, par: 36 },
+            { club: "Al Hamra Golf Club - Floodlit", tee: "Blue-Floodlit", gender: "M", cr: 36.6, slope: 133, par: 36 },
+            { club: "Al Hamra Golf Club - Floodlit", tee: "White-Floodlit", gender: "M", cr: 36.0, slope: 131, par: 36 },
+            { club: "Al Hamra Golf Club - Floodlit", tee: "Yellow-Floodlit", gender: "M", cr: 34.4, slope: 133, par: 36 },
+            { club: "Al Zorah Golf Club", tee: "Black", gender: "M", cr: 74.7, slope: 138, par: 72 },
+            { club: "Al Zorah Golf Club", tee: "Gold", gender: "M", cr: 71.8, slope: 135, par: 72 },
+            { club: "Al Zorah Golf Club", tee: "Silver", gender: "M", cr: 70.0, slope: 131, par: 72 },
+            { club: "Arabian Ranches Golf Club", tee: "Black", gender: "M", cr: 76.9, slope: 137, par: 72 },
+            { club: "Arabian Ranches Golf Club", tee: "Blue", gender: "M", cr: 71.3, slope: 125, par: 72 },
+            { club: "Arabian Ranches Golf Club", tee: "Gold", gender: "M", cr: 74.3, slope: 131, par: 72 },
+            { club: "Dubai Creek Golf & Yacht Club", tee: "Black - Men 2024", gender: "M", cr: 75.4, slope: 147, par: 71 },
+            { club: "Dubai Creek Golf & Yacht Club", tee: "Blue - Men 2024", gender: "M", cr: 74.7, slope: 145, par: 71 },
+            { club: "Dubai Creek Golf & Yacht Club", tee: "Red - Men 2024", gender: "M", cr: 67.0, slope: 121, par: 71 },
+            { club: "Dubai Creek Golf & Yacht Club", tee: "White - Men 2024", gender: "M", cr: 71.8, slope: 137, par: 71 },
+            { club: "Dubai Hills Golf Club", tee: "Black", gender: "M", cr: 74.8, slope: 138, par: 72 },
+            { club: "Dubai Hills Golf Club", tee: "Blue", gender: "M", cr: 72.5, slope: 134, par: 72 },
+            { club: "Dubai Hills Golf Club", tee: "Green", gender: "M", cr: 64.9, slope: 119, par: 72 },
+            { club: "Dubai Hills Golf Club", tee: "Silver", gender: "M", cr: 69.2, slope: 128, par: 72 },
+            { club: "Emirates Golf Club - Faldo", tee: "Black - Men 2024", gender: "M", cr: 75.6, slope: 154, par: 72 },
+            { club: "Emirates Golf Club - Faldo", tee: "Blue - Men 2024", gender: "M", cr: 73.8, slope: 149, par: 72 },
+            { club: "Emirates Golf Club - Faldo", tee: "Green - Men 2024", gender: "M", cr: 64.2, slope: 113, par: 72 },
+            { club: "Emirates Golf Club - Faldo", tee: "Red - Men 2024", gender: "M", cr: 67.4, slope: 123, par: 72 },
+            { club: "Emirates Golf Club - Faldo", tee: "Tournament - Men 2024", gender: "M", cr: 72.2, slope: 146, par: 72 },
+            { club: "Emirates Golf Club - Faldo", tee: "White - Men 2024", gender: "M", cr: 70.3, slope: 142, par: 72 },
+            { club: "Emirates Golf Club - Majlis", tee: "Black - Men 2024", gender: "M", cr: 77.5, slope: 151, par: 72 },
+            { club: "Emirates Golf Club - Majlis", tee: "Blue - Men 2024", gender: "M", cr: 75.2, slope: 146, par: 72 },
+            { club: "Emirates Golf Club - Majlis", tee: "Red - Men 2024", gender: "M", cr: 68.7, slope: 127, par: 72 },
+            { club: "Emirates Golf Club - Majlis", tee: "Tournament - 2024", gender: "M", cr: 73.7, slope: 144, par: 72 },
+            { club: "Emirates Golf Club - Majlis", tee: "White - Men 2024", gender: "M", cr: 72.9, slope: 142, par: 72 },
+            { club: "JA The Resort Golf Course", tee: "Black", gender: "M", cr: 69.1, slope: 136, par: 72 },
+            { club: "JA The Resort Golf Course", tee: "Black or Blue/White combo", gender: "M", cr: 68.0, slope: 135, par: 72 },
+            { club: "JA The Resort Golf Course", tee: "Black/Blue combo", gender: "M", cr: 69.1, slope: 136, par: 72 },
+            { club: "JA The Resort Golf Course", tee: "Blue", gender: "M", cr: 69.1, slope: 136, par: 72 },
+            { club: "JA The Resort Golf Course", tee: "White", gender: "M", cr: 66.8, slope: 132, par: 72 },
+            { club: "JA The Resort Golf Course", tee: "White/Red combo", gender: "M", cr: 67.5, slope: 130, par: 72 },
+            { club: "Jumeirah Golf Estates - Earth", tee: "Championship - Men 2024", gender: "M", cr: 78.1, slope: 154, par: 72 },
+            { club: "Jumeirah Golf Estates - Earth", tee: "Composite - Men 2024", gender: "M", cr: 73.8, slope: 146, par: 72 },
+            { club: "Jumeirah Golf Estates - Earth", tee: "Forward - Men 2024", gender: "M", cr: 67.7, slope: 120, par: 72 },
+            { club: "Jumeirah Golf Estates - Earth", tee: "Signature - Men 2024", gender: "M", cr: 72.5, slope: 143, par: 72 },
+            { club: "Jumeirah Golf Estates - Earth", tee: "Tournament - Men 2024", gender: "M", cr: 75.1, slope: 149, par: 72 },
+            { club: "Jumeirah Golf Estates - Fire", tee: "Championship - Men 2024", gender: "M", cr: 76.7, slope: 142, par: 72 },
+            { club: "Jumeirah Golf Estates - Fire", tee: "Composite - Men 2024", gender: "M", cr: 73.4, slope: 136, par: 72 },
+            { club: "Jumeirah Golf Estates - Fire", tee: "Forward - Men 2024", gender: "M", cr: 67.9, slope: 125, par: 72 },
+            { club: "Jumeirah Golf Estates - Fire", tee: "Signature - Men 2024", gender: "M", cr: 72.2, slope: 132, par: 72 },
+            { club: "Jumeirah Golf Estates - Fire", tee: "Tournament - Men 2024", gender: "M", cr: 74.8, slope: 138, par: 72 },
+            { club: "Saadiyat Beach Golf Club", tee: "Black", gender: "M", cr: 76.8, slope: 138, par: 72 },
+            { club: "Saadiyat Beach Golf Club", tee: "Blue", gender: "M", cr: 72.1, slope: 128, par: 72 },
+            { club: "Saadiyat Beach Golf Club", tee: "Gold", gender: "M", cr: 74.5, slope: 133, par: 72 },
+            { club: "Saadiyat Beach Golf Club", tee: "White", gender: "M", cr: 68.6, slope: 122, par: 72 },
+            { club: "Saadiyat Beach Golf Club - Winter", tee: "Blue Middle Composite", gender: "M", cr: 73.2, slope: 127, par: 72 },
+            { club: "Saadiyat Beach Golf Club - Winter", tee: "Gold Back 18Holes", gender: "M", cr: 76.0, slope: 128, par: 72 },
+            { club: "Sharjah Golf & Shooting Club", tee: "Black Blue Championship", gender: "M", cr: 74.3, slope: 135, par: 72 },
+            { club: "Sharjah Golf & Shooting Club", tee: "White Yellow Men's", gender: "M", cr: 72.4, slope: 132, par: 72 },
+            { club: "The Els Club Dubai", tee: "Black", gender: "M", cr: 75.7, slope: 138, par: 72 },
+            { club: "The Els Club Dubai", tee: "Blue", gender: "M", cr: 72.5, slope: 133, par: 72 },
+            { club: "The Els Club Dubai", tee: "White", gender: "M", cr: 70.0, slope: 125, par: 72 },
+            { club: "The Montgomerie Dubai", tee: "Black Pearl", gender: "M", cr: 75.5, slope: 135, par: 72 },
+            { club: "The Montgomerie Dubai", tee: "Blue Sapphire", gender: "M", cr: 71.9, slope: 132, par: 72 },
+            { club: "The Montgomerie Dubai", tee: "Green Emerald", gender: "M", cr: 69.3, slope: 128, par: 72 },
+            { club: "The Track Meydan Golf Course", tee: "Black", gender: "M", cr: 75.6, slope: 139, par: 72 },
+            { club: "The Track Meydan Golf Course", tee: "Black/Gold", gender: "M", cr: 74.5, slope: 137, par: 72 },
+            { club: "The Track Meydan Golf Course", tee: "Gold", gender: "M", cr: 73.4, slope: 135, par: 72 },
+            { club: "The Track Meydan Golf Course", tee: "Gold/Silver", gender: "M", cr: 71.5, slope: 130, par: 72 },
+            { club: "The Track Meydan Golf Course", tee: "Silver", gender: "M", cr: 69.6, slope: 125, par: 72 },
+            { club: "Tower Links Golf Club", tee: "Black", gender: "M", cr: 75.2, slope: 139, par: 72 },
+            { club: "Tower Links Golf Club", tee: "Green", gender: "M", cr: 73.0, slope: 135, par: 72 },
+            { club: "Tower Links Golf Club", tee: "White", gender: "M", cr: 71.1, slope: 133, par: 72 },
+            { club: "Trump International Dubai", tee: "Black", gender: "M", cr: 73.6, slope: 133, par: 71 },
+            { club: "Trump International Dubai", tee: "Blue", gender: "M", cr: 70.0, slope: 125, par: 71 },
+            { club: "Trump International Dubai", tee: "Gold", gender: "M", cr: 72.0, slope: 129, par: 71 },
+            { club: "Trump International Dubai", tee: "Red Junior", gender: "M", cr: 68.4, slope: 119, par: 71 },
+            { club: "Yas Acres Golf & Country Club", tee: "Black Tees - Men", gender: "M", cr: 75.8, slope: 139, par: 72 },
+            { club: "Yas Acres Golf & Country Club", tee: "Blue Tees - Men", gender: "M", cr: 71.0, slope: 129, par: 72 },
+            { club: "Yas Acres Golf & Country Club", tee: "Gold Tees - Men", gender: "M", cr: 73.4, slope: 134, par: 72 },
+            { club: "Yas Acres Golf & Country Club", tee: "Orange Tees - Men", gender: "M", cr: 65.4, slope: 118, par: 72 },
+            { club: "Yas Acres Golf & Country Club", tee: "Silver Tees - Men", gender: "M", cr: 68.2, slope: 124, par: 72 },
+            { club: "Yas Links Abu Dhabi", tee: "62", gender: "M", cr: 72.0, slope: 129, par: 72 },
+            { club: "Yas Links Abu Dhabi", tee: "66", gender: "M", cr: 72.5, slope: 134, par: 72 },
+            { club: "Yas Links Abu Dhabi", tee: "70", gender: "M", cr: 74.9, slope: 139, par: 72 },
+            { club: "Yas Links Abu Dhabi", tee: "74", gender: "M", cr: 76.1, slope: 143, par: 72 }
+        ];
+
+        // Load custom courses from localStorage
+        let customTees = JSON.parse(localStorage.getItem('customTees')) || [];
+        let tees = [...predefinedTees, ...customTees];
+
+        // Get unique clubs and add "Other"
+        const clubs = [...new Set(tees.map(t => t.club)), "Other"].sort();
+
+        // Populate club select
+        const clubSelect = document.getElementById('club');
+        clubs.forEach(c => {
+            const option = document.createElement('option');
+            option.value = c;
+            option.textContent = c;
+            clubSelect.appendChild(option);
+        });
+
+        // On club change, populate tees or show custom inputs
+        clubSelect.addEventListener('change', () => {
+            const selectedClub = clubSelect.value;
+            const teeSelect = document.getElementById('tee');
+            const customCourseInputs = document.getElementById('customCourseInputs');
+            const teeInfo = document.getElementById('teeInfo');
+            teeSelect.innerHTML = ''; // Clear previous options
+            teeInfo.textContent = ''; // Clear tee info
+            if (selectedClub === "Other") {
+                customCourseInputs.style.display = 'block';
+                teeSelect.innerHTML = '<option value="">Enter custom course details</option>';
+            } else {
+                customCourseInputs.style.display = 'none';
+                const filteredTees = tees.filter(t => t.club === selectedClub);
+                filteredTees.forEach(t => {
+                    const option = document.createElement('option');
+                    option.value = JSON.stringify({ tee: t.tee, cr: t.cr, slope: t.slope });
+                    option.textContent = t.tee;
+                    teeSelect.appendChild(option);
+                });
+            }
+        });
+
+        // On tee change, display Course Rating and Slope
+        document.getElementById('tee').addEventListener('change', () => {
+            const teeValue = document.getElementById('tee').value;
+            const teeInfo = document.getElementById('teeInfo');
+            if (teeValue) {
+                const teeData = JSON.parse(teeValue);
+                teeInfo.textContent = `Course Rating: ${teeData.cr}, Slope Rating: ${teeData.slope}`;
+            } else {
+                teeInfo.textContent = '';
+            }
+        });
+
+        // Load rounds from localStorage
+        let rounds = JSON.parse(localStorage.getItem('golfRounds')) || [];
+
+        // Display rounds
+        function displayRounds() {
+            const tbody = document.querySelector('#rounds tbody');
+            tbody.innerHTML = '';
+            rounds.forEach((round, index) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${round.date}</td>
+                    <td>${round.club}</td>
+                    <td>${round.tee}</td>
+                    <td>${round.score}</td>
+                    <td>${round.differential.toFixed(1)}</td>
+                    <td><button class="delete-btn" onclick="deleteRound(${index})">Delete</button></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+        displayRounds(); // Initial display
+
+        // Add round function
+        function addRound() {
+            const club = clubSelect.value;
+            const teeValue = document.getElementById('tee').value;
+            const score = parseFloat(document.getElementById('score').value);
+            let teeData;
+
+            if (club === "Other") {
+                const customCourseName = document.getElementById('customCourseName').value.trim();
+                const customCR = parseFloat(document.getElementById('customCR').value);
+                const customSlope = parseInt(document.getElementById('customSlope').value);
+                if (!customCourseName || isNaN(customCR) || isNaN(customSlope) || isNaN(score)) {
+                    return alert('Please enter valid Course Name, Course Rating, Slope Rating, and Score for custom course.');
+                }
+                if (customSlope < 55 || customSlope > 155) {
+                    return alert('Slope Rating must be between 55 and 155.');
+                }
+                teeData = { tee: "Custom Tee", cr: customCR, slope: customSlope };
+
+                // Save custom course to localStorage
+                const customCourse = {
+                    club: customCourseName,
+                    tee: "Custom Tee",
+                    gender: "M",
+                    cr: customCR,
+                    slope: customSlope,
+                    par: 72 // Default par
+                };
+                if (!tees.some(t => t.club === customCourseName && t.tee === "Custom Tee")) {
+                    customTees.push(customCourse);
+                    tees.push(customCourse);
+                    localStorage.setItem('customTees', JSON.stringify(customTees));
+                    // Update club dropdown
+                    if (!clubs.includes(customCourseName)) {
+                        clubs.push(customCourseName);
+                        clubs.sort();
+                        clubSelect.innerHTML = '';
+                        clubs.forEach(c => {
+                            const option = document.createElement('option');
+                            option.value = c;
+                            option.textContent = c;
+                            clubSelect.appendChild(option);
+                        });
+                        clubSelect.value = customCourseName; // Select the new course
+                        clubSelect.dispatchEvent(new Event('change')); // Trigger tee population
+                    }
+                }
+            } else {
+                if (!teeValue) return alert('Select a tee');
+                teeData = JSON.parse(teeValue);
+            }
+
+            if (!club || isNaN(score)) return alert('Invalid input');
+
+            const differential = Math.round(((113 / teeData.slope) * (score - teeData.cr)) * 10) / 10;
+
+            const newRound = {
+                date: new Date().toLocaleString(),
+                club,
+                tee: teeData.tee,
+                score,
+                differential
+            };
+
+            rounds.push(newRound);
+            localStorage.setItem('golfRounds', JSON.stringify(rounds));
+            displayRounds();
+            document.getElementById('score').value = ''; // Clear input
+            if (club === "Other") {
+                document.getElementById('customCourseName').value = '';
+                document.getElementById('customCR').value = '';
+                document.getElementById('customSlope').value = '';
+            }
+        }
+
+        // Delete individual round
+        function deleteRound(index) {
+            if (window.confirm('Are you sure you want to delete this round?')) {
+                rounds.splice(index, 1);
+                localStorage.setItem('golfRounds', JSON.stringify(rounds));
+                displayRounds();
+                document.getElementById('result').textContent = ''; // Clear result
+            }
+        }
+
+        // Calculate Handicap Index
+        function calculateHI() {
+            const resultDiv = document.getElementById('result');
+            if (rounds.length < 3) {
+                resultDiv.textContent = 'Need at least 3 rounds to calculate Handicap Index.';
+                return;
+            }
+
+            // Get last 20 differentials (most recent)
+            const recentDiffs = rounds.slice(-20).map(r => r.differential);
+            const numScores = recentDiffs.length;
+            const sortedDiffs = [...recentDiffs].sort((a, b) => a - b);
+
+            let numToUse = 0;
+            let adjustment = 0;
+
+            // WHS rules for number of differentials to use
+            if (numScores >= 20) {
+                numToUse = 8; // Best 8 of last 20
+            } else {
+                switch (numScores) {
+                    case 19: numToUse = 7; break;
+                    case 17:
+                    case 18: numToUse = 6; break;
+                    case 15:
+                    case 16: numToUse = 5; break;
+                    case 12:
+                    case 13:
+                    case 14: numToUse = 4; break;
+                    case 9:
+                    case 10:
+                    case 11: numToUse = 3; break;
+                    case 6:
+                    case 7:
+                    case 8: numToUse = 2; break;
+                    case 5: numToUse = 1; adjustment = -1; break;
+                    case 4: numToUse = 1; adjustment = -1; break;
+                    case 3: numToUse = 1; adjustment = -2; break;
+                }
+            }
+
+            // Take the best (lowest) numToUse differentials
+            const bestDiffs = sortedDiffs.slice(0, numToUse);
+            const sum = bestDiffs.reduce((a, b) => a + b, 0);
+            const avg = sum / numToUse;
+            let hi = avg + adjustment;
+            hi = Math.round(hi * 10) / 10;
+
+            resultDiv.textContent = `Your Handicap Index: ${hi} (based on best ${numToUse} of ${numScores} rounds)`;
+        }
+
+        // Clear all rounds
+        function clearRounds() {
+            if (window.confirm('Are you sure you want to clear all rounds?')) {
+                rounds = [];
+                localStorage.setItem('golfRounds', JSON.stringify([]));
+                displayRounds();
+                document.getElementById('result').textContent = '';
+            }
+        }
+
+        // Trigger tee population on initial load if club selected
+        if (clubSelect.value) {
+            clubSelect.dispatchEvent(new Event('change'));
+        }
+    </script>
+</body>
+</html>
